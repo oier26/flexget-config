@@ -1,0 +1,7 @@
+regexp:
+  accept:
+    - '1password'
+    - 'adobe lightroom'
+    - 'fantastical'
+    - 'notability'
+    - 'pdf expert'

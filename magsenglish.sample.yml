@@ -1,0 +1,6 @@
+regexp:
+  accept:
+    - 'ESPN'
+    - 'Wired USA'
+    - 'WebUser'
+    - 'National Geographic USA'

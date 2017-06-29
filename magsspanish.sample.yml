@@ -1,0 +1,5 @@
+regexp:
+  accept:
+    - 'National Geographic'
+    - 'Hobby Consolas'
+    - 'Thermomix'
