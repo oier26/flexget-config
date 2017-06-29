@@ -1,0 +1,549 @@
+variables: secrets.yml
+
+schedules:
+  - tasks: ['database_*']
+    schedule:
+      hour: 0,3,6,9,12,15,18,21
+  - tasks: ['*_rss', 'descarga_mags*']
+    schedule:
+      minute: 0,30
+  - tasks: ['*_discover','*_manual']
+    schedule:
+      minute: 5
+  - tasks: ['mover_*','ficheros_descomprimir']
+    schedule:
+      minute: 15,45
+
+web_server:
+  bind: 192.168.0.12
+  port: 9092
+  web_ui: yes
+
+templates:
+
+  global:
+    pathscrub: linux
+    log_filter:
+      kodi_library:
+        - entries were 
+      details:
+        - produce any entries
+      urlrewriter:
+        - URL rewritten to
+      transmission:
+        - torrent added
+      move:
+        - Creating destination directory
+      task:
+        - better resolution
+        - task to be ran again
+        - any input plugins
+        - any output plugins
+        - any filter plugins
+      discover:
+        - did not return anything
+      web_server_daemon:
+        - Initiating
+        - Registering
+        - Running
+
+  #Datos de Transmission
+  transmission-anchors:
+    _transmission-settings: &transmission-settings
+      host: 192.168.0.12
+      port: 9091
+      username: "{? transmission.user ?}"
+      password: "{? transmission.pass ?}"
+  #Avisos de Telegram
+  avisos_tarea:
+    notify:
+      entries:
+        message: |+
+          {%if task in ['descarga_series_discover','descarga_series_manual','descarga_series_rss']%}*Nueva serie en descarga*
+          {% if tvdb_series_name is defined -%}
+          *{{tvdb_series_name}}* - {{tvdb_ep_id}} - {{quality|d('')}}
+          *{{tvdb_ep_name|d('')}}*
+          *Score:* {{tvdb_ep_rating}}/10
+          [Image]({{tvdb_ep_image|replace("_", "%5F")}})
+          {% else -%}
+          {{title}}
+          {%- endif -%}
+          {%elif task in ['descarga_peliculas_discover','descarga_peliculas_manual']%}*Nueva pelicula en descarga*
+          {% if imdb_name is defined -%}
+          *{{imdb_name}}* - ({{imdb_year}})
+          {{quality|d('')}}
+          *Score:* {{imdb_score}}/10 - {{imdb_votes}} votes
+          [Image]({{tmdb_posters[0]|replace("_", "%5F")}})
+          {% else -%}
+          {{title}}
+          {%- endif -%}
+          {%elif task in ['descarga_magsenglish','descarga_magsspanish']%}*Nueva revista en descarga*
+          *{{title}}*
+          [Image]({{description|replace("_", "%5F")}})
+          {%elif task in ['descarga_macapps_rss']%}*Nueva aplicacion para MAC en descarga*
+          {{title}}
+          {%else%}*Proceso en marcha:*
+          {{task}} - {{title}}
+          {%endif%}
+        via:
+          - telegram:
+              bot_token: "{? telegram.token ?}"
+              parse_mode: markdown
+              recipients:
+                - username: "{? telegram.user ?}"
+  avisos_error:
+    notify:
+      abort:
+        via:
+          - telegram:
+              bot_token: "{? telegram.token ?}"
+              parse_mode: markdown
+              recipients:
+                - username: "{? telegram.user ?}"
+  #Configuracion de calidad de series (720p en Newpct)
+  config_series:
+    series:
+      settings:
+        all:
+          ep_regexp:
+            - Cap.(\d+)(\d\d)
+          quality: hdtv 720p
+    include: series.yml
+    exists_series:
+      - "{? folder.series ?}"
+    regexp:
+      reject:
+        - V.O.:
+            from: title
+    set:
+      path: "{? folder.downseries ?}"
+  #Configuracion de calidad de peliculas (No screeners or cams, 720p+)
+  config_peliculas:
+    exists_movie:
+      - "{? folder.movies ?}"
+    assume_quality:
+      h264: 720p
+      microhd: 720p
+      remux: 720p
+      bluray: 1080p
+    quality: remux+ 720p+
+    regexp:
+      reject:
+        - V.O.
+        - 'sub[s][\s\._]'
+        - '[Ll]atino'
+        - '[Ss]creener'
+        - '[Ss]creener':
+            from: url
+        - Screeener
+        - Screeener:
+            from: url
+        - 3D
+      from: title
+    set:
+      path: "{? folder.downmovies ?}"
+  #Servidores de descarga
+  server_series:
+    transmission:
+      <<: *transmission-settings
+      addpaused: no
+      include_subs: no
+      rename_like_files: yes
+      skip_files:
+        - '*.nfo'
+        - '*.sfv'
+        - '[sS]ample*'
+        - '*.url'
+        - '*.html'
+        - '*.htm'
+      content_filename: "{{tvdb_series_name|default(series_name)|pathscrub}} - {{tvdb_ep_id|default(series_id)}}{% if tvdb_ep_name|default(False) %} - {{tvdb_ep_name|pathscrub}}{% endif %}"
+      path: "{? folder.downseries ?}"
+  server_peliculas:
+    transmission:
+      <<: *transmission-settings
+      addpaused: no
+      include_subs: no
+      rename_like_files: yes
+      skip_files:
+        - '*.nfo'
+        - '*.sfv'
+        - '[sS]ample*'
+        - '*.url'
+        - '*.html'
+        - '*.htm'
+      content_filename: "{{movie_name|default(imdb_name)|pathscrub}} ({{movie_year|default(imdb_year)}})"
+      path: "{? folder.downmovies ?}"
+  server_macapps:
+    transmission:
+      <<: *transmission-settings
+      addpaused: no
+      path: "{? folder.downmacapps ?}"
+  #Recolectores de metadata
+  metadata_series:
+    thetvdb_lookup: yes
+    metainfo_series: yes
+  metadata_peliculas:
+    imdb_lookup: yes
+    metainfo_movie: yes
+
+tasks:
+
+  ########## SERIES ##########
+
+  #Descarga episodios nuevos del RSS de NewPct1
+  descarga_series_rss:
+    priority: 5
+    template:
+      - server_series
+      - avisos_tarea
+      - avisos_error
+      - config_series
+      - metadata_series
+    rss:
+      url: http://www.newpct.com/feed/
+      link: link
+
+  #Descarga episodios antiguos de series añadidas a la lista
+  descarga_series_discover:
+    priority: 8
+    template:
+      - server_series
+      - avisos_tarea
+      - avisos_error
+      - config_series
+      - metadata_series
+    discover:
+      release_estimations: strict
+      interval: 15 minutes
+      what:
+        - next_series_episodes:
+            from_start: yes
+      from:
+        - newpct: yes
+
+  #Descarga episodios de torrents en carpeta series_torrents
+  descarga_series_manual:
+    priority: 4
+    template:
+      - metadata_series
+      - server_series
+      - avisos_tarea
+      - avisos_error
+    disable:
+      - seen
+      - seen_info_hash
+      - retry_failed
+      - details
+    filesystem:
+      path: "{? folder.downseries ?}"
+      mask: '*.torrent'
+    accept_all: yes
+    exec:
+      on_output:
+        for_accepted: rm -f "{{location}}"
+
+  #Llenar base de datos de series con archivos en biblioteca
+  database_series_check:
+    priority: 1
+    template:
+      - metadata_series
+      - avisos_tarea
+      - avisos_error
+    seen: local
+    filesystem:
+      path: "{? folder.series ?}"
+      recursive: yes
+      retrieve: files
+      regexp: '.*\.(avi|mkv|mp4)$'
+    configure_series:
+      from:
+        filesystem:
+          path: "{? folder.series ?}"
+          retrieve: dirs
+          regexp: '^[^\@\.].*$'
+      settings:
+        tracking: no
+
+  ########## PELICULAS ##########
+
+  #Descarga peliculas añadidas a la lista
+  descarga_peliculas_discover:
+    priority: 37
+    template:
+      - server_peliculas
+      - avisos_tarea
+      - avisos_error
+      - config_peliculas
+      - metadata_peliculas
+    disable:
+      - seen
+      - seen_info_hash
+      - retry_failed
+    discover:
+      release_estimations:
+        optimistic: 7 days
+      interval: 1 hours
+      what:
+        - movie_list: movies
+      from:
+        - newpct: yes
+    list_match:
+      from:
+        - movie_list: movies
+  #Descarga peliculas de torrents alojados en movies_torrents
+  descarga_peliculas_manual:
+    priority: 34
+    template:
+      - metadata_peliculas
+      - server_peliculas
+      - avisos_tarea
+      - avisos_error
+    disable:
+      - seen
+      - seen_info_hash
+      - retry_failed
+    filesystem:
+      path: "{? folder.downmovies ?}"
+      mask: '*.torrent'
+    accept_all: yes
+    exec:
+      on_output:
+        for_accepted: rm -f "{{location}}"
+    list_remove:
+      - movie_list: movies
+
+  #Llenar lista interna de peliculas con lista de Trakt
+  database_peliculas_llenar:
+    priority: 32
+    template:
+      - avisos_error
+    imdb_watchlist:
+      user_id: "{? imdb.username ?}"
+      list: "{? imdb.movies ?}"
+      force_language: es-es
+    accept_all: yes
+    manipulate:
+      - title:
+          extract: (.*)\s\(.*\).*
+    list_add:
+      - movie_list: movies
+
+  ########## REVISTAS ##########
+
+  descarga_magsenglish:
+    include: magsenglish.yml
+    template:
+      - avisos_tarea
+      - avisos_error
+    rss:
+      url: http://twitrss.me/twitter_user_to_rss/?user=magazinelib
+      all_entries: no
+    disable:
+      - retry_failed
+    manipulate:
+      - description:
+          extract: '<img\ssrc\=\"(.*?)\"'
+      - title:
+          extract: 'New magazine in PDF added\s\-\s*(.*)\s*Download:'
+      - title:
+          replace:
+            regexp: '&#x2014;'
+            format: '-'
+    download:
+      path: "{? folder.downmags ?}"
+      overwrite: yes
+      fail_html: no
+      filename: '{{title|pathscrub}}.pdf'
+      
+  descarga_magsspanish:
+    include: magsspanish.yml
+    template:
+      - avisos_tarea
+      - avisos_error
+    disable:
+      - retry_failed
+    rss:
+      url: http://feed43.com/desmixmags.xml
+      all_entries: yes
+    manipulate:
+      - description:
+          extract: '(.*?)\s*<p>.*<\/p>\s*'
+    pyload:
+      api: http://localhost:8190/api
+      username: "{? pyload.user ?}"
+      password: "{? pyload.pass ?}"
+      package: 'magazines'
+      queue: yes
+
+  ########## MACAPPS ##########
+
+  descarga_macapps_rss:
+    priority: 71
+    include: macapps.yml
+    template:
+      - server_macapps
+      - avisos_tarea
+      - avisos_error
+    disable:
+      - retry_failed
+    rss:
+      url: http://mac-torrents.com/feed/
+      link: link
+
+  ########## LIBRERIA ##########
+
+  #Mover series en carpeta de series
+  mover_series:
+    priority: 41
+    template:
+      - metadata_series
+      - avisos_error
+    disable:
+      - seen
+      - seen_info_hash
+      - retry_failed
+    parsing:
+      series: guessit
+    filesystem:
+      path: "{? folder.downseries ?}"
+      recursive: yes
+      retrieve: files
+      regexp: '.*\.(avi|mkv|mp4)$'
+    accept_all: yes
+    move:
+      to: "{? folder.series ?}{{tvdb_series_name|default(series_name)|pathscrub}}/Season {{'%02d'|format(series_season)}}/"
+      rename: "{{tvdb_series_name|default(series_name)|pathscrub}} - {{series_id}}{% if tvdb_ep_name|default(False) %} - {{tvdb_ep_name|pathscrub}}{% endif %}"
+    kodi_library:
+      action: scan
+      category: video
+      url: http://192.168.0.20
+      port: 8080
+
+  #Mover peliculas en carpeta de movies
+  mover_peliculas:
+    priority: 43
+    template:
+      - metadata_peliculas
+      - avisos_error
+    disable:
+      - seen
+      - seen_info_hash
+      - retry_failed
+    parsing:
+      movie: guessit
+    filesystem:
+      path: "{? folder.downmovies ?}"
+      recursive: yes
+      retrieve: files
+      regexp: '.*\.(avi|mkv|mp4)$'
+    accept_all: yes
+    regexp:
+      reject:
+        - \btrailer\b
+        - \bsample\b
+    move:
+      to: "{? folder.movies ?}{{movie_name|default(imdb_name)|pathscrub}} ({{imdb_year|default(movie_year)}})/"
+      rename: "{{movie_name|default(imdb_name)|pathscrub}} ({{movie_year|default(imdb_year)}})"
+    kodi_library:
+      action: scan
+      category: video
+      url: http://192.168.0.20
+      port: 8080
+      
+  #Mover series en carpeta de series
+  mover_mags:
+    priority: 45
+    disable:
+      - seen
+      - seen_info_hash
+      - retry_failed
+    template:
+      - avisos_error
+    filesystem:
+      path: "{? folder.downmags ?}"
+      recursive: yes
+      retrieve: files
+      regexp: '.*\.(pdf)$'
+    accept_all: yes
+    manipulate:
+      - filename:
+          replace:
+            regexp: '__'
+            format: ' - '
+      - filename:
+          replace:
+            regexp: '_'
+            format: ' '
+      - title:
+          from: filename
+      - title:
+          extract: (.*?)\s[-–—]\s.*\.pdf$
+
+    move:
+      to: "{? folder.mags ?}{{title|pathscrub}}"
+
+  #Mover revistas a carpeta de revistas antiguas
+  mover_oldmags:
+    priority: 47
+    disable:
+      - seen
+      - seen_info_hash
+      - retry_failed
+    template:
+      - avisos_error
+    filesystem:
+      path: "{? folder.mags ?}"
+      recursive: yes
+      retrieve: files
+      regexp: '.*\.(pdf)$'
+    manipulate:
+      - title:
+          from: filename
+      - title:
+          extract: (.*?)\s[-–]\s.*\.pdf$
+    age:
+      field: created
+      action: accept
+      age: 8 weeks
+    move:
+      to: "{? folder.oldmags ?}{{title|pathscrub}}"
+
+  #Limpiar Transmission
+  database_server_limpiar:
+    priority: 51
+    disable: details
+    log_filter:
+      task:
+        - any plugins
+    clean_transmission:
+      <<: *transmission-settings
+      finished_for: 30 minutes
+
+  #Descomprimir ficheros en carpetas de descarga
+  ficheros_descomprimir:
+    priority: 103
+    accept_all: yes
+    parsing:
+      movie: guessit
+      series: guessit
+    filesystem:
+      path:
+        - "{? folder.downmovies ?}"
+        - "{? folder.downmags ?}"
+        - "{? folder.downseries ?}"
+      recursive: yes
+      retrieve: files
+      regexp: '.*\.(rar|r0+[01](/01)|zip)$'
+    decompress:
+      keep_dirs: yes
+      delete_archive: yes
+    delete:
+      along:
+        extensions:
+          - sub
+          - srt
+          - url
+          - txt
+          - webloc
+
+#EOF
